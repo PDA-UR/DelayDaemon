@@ -14,7 +14,9 @@ DelayDaemon [event_handle] [min_delay] [max_delay]
 ```
 
 **event_handle**: path to input device, e.g. `/dev/input/event5`
+
 **min_delay**: minimum delay to be added (in milliseconds)
+
 **max_delay**: maximum delay to be added (in milliseconds, optional)
 
 If **max_delay** is not defined, a constant delay of **min_delay** is added to all events.
