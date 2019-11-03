@@ -29,16 +29,22 @@ int virtualFD = -1;
 
 char* eventHandle;
 
-int min_delay = -1;
-int max_delay = -1;
+// delay range for mouse clicks
+int min_delay_click = -1;
+int max_delay_click = -1;
+
+// delay range for mouse movement
+// note that variance here causes the movement to stutter
+int min_delay_move = -1;
+int max_delay_move = -1;
 
 // generate a delay time for an input event
-// this function uses a linear distribution between min_delay and max_delay
+// this function uses a linear distribution between min_delay_move and max_delay_move
 // other distributions (e.g. gaussian) may be added in the future
-int calculate_delay()
+int calculate_delay(int min, int max)
 {
-    if(min_delay == max_delay) return min_delay; // add constant delay if no range is specified
-    else return min_delay + (rand() % (max_delay - min_delay));
+    if(min == max) return min; // add constant delay if no range is specified
+    else return min + (rand() % (max - min));
 }
 
 // creates an input event for the specified device
@@ -141,18 +147,23 @@ int main(int argc, char* argv[])
     if(argc <= 2)
     {
         printf("Too few arguments!\n"
-               "Usage: latency_daemon [event_handle] [min_delay] [max_delay]\n"
+               "Usage: latency_daemon [event_handle] [min_delay_move] [max_delay_move]\n"
                "event_handle: path to input device you want to delay (e.g. /dev/input/event5)\n"
-               "min_delay: minimum delay to be added (in milliseconds)\n"
-               "max_delay: maximum delay to be added (in milliseconds) (optional)\n");
+               "min_delay_click: minimum delay to be added to click events (in milliseconds)\n"
+               "max_delay_click: maximum delay to be added to click events (in milliseconds)\n"
+               "min_delay_move: minimum delay to be added to mouse movement (in milliseconds)\n"
+               "max_delay_move: maximum delay to be added to mouse movement (in milliseconds)\n"
+               "Use the same value for min and max to achieve constant delays.\n");
         return 1;
     }
 
     eventHandle = argv[1];
-    if(sscanf(argv[2], "%d", &min_delay) == EOF) min_delay = 0;
-    if(sscanf(argv[3], "%d", &max_delay) == EOF) max_delay = min_delay;
+    if(sscanf(argv[2], "%d", &min_delay_click) == EOF) min_delay_click = 0;
+    if(sscanf(argv[3], "%d", &max_delay_click) == EOF) max_delay_click = min_delay_click;
+    if(sscanf(argv[4], "%d", &min_delay_move) == EOF) min_delay_move = 0;
+    if(sscanf(argv[5], "%d", &max_delay_move) == EOF) max_delay_move = min_delay_move;
 
-    if(DEBUG) printf("min delay: %d\nmax delay: %d \n", min_delay, max_delay);
+    if(DEBUG) printf("click delay: %d - %d\nmove delay: %d - %d\n", min_delay_click, max_delay_click, min_delay_move, max_delay_move);
 
     if(!init_input_device()) return 1;
     if(!init_virtual_input()) return 1;
@@ -176,7 +187,9 @@ int main(int argc, char* argv[])
             event->type = inputEvent.type;
             event->code = inputEvent.code;
             event->value = inputEvent.value;
-            event->delay = calculate_delay();
+
+            if(inputEvent.type == EV_KEY) event->delay = calculate_delay(min_delay_click, max_delay_click);
+            else if(inputEvent.type == EV_REL) event->delay = calculate_delay(min_delay_move, max_delay_move);
 
             pthread_t delayed_event_thread; 
             pthread_create(&delayed_event_thread, NULL, invoke_delayed_event, event); 
