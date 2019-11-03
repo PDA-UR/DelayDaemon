@@ -16,11 +16,11 @@ Note that a varying delay for movement events leads to stuttering mouse movement
 DelayDaemon [event_handle] [min_delay_click] [max_delay_click] [min_delay_move] [max_delay_move]
 ```
 
-**event_handle**: path to input device, e.g. `/dev/input/event5`
-**min_delay_click**: minimum delay to be added to mouse clicks (in milliseconds)
-**max_delay_click**: maximum delay to be added to mouse clicks (in milliseconds)
-**min_delay_move**: minimum delay to be added to mouse movement (in milliseconds)
-**max_delay_move**: maximum delay to be added to mouse movement (in milliseconds)
+ * **event_handle**: path to input device, e.g. `/dev/input/event5`
+ * **min_delay_click**: minimum delay to be added to mouse clicks (in milliseconds)
+ * **max_delay_click**: maximum delay to be added to mouse clicks (in milliseconds)
+ * **min_delay_move**: minimum delay to be added to mouse movement (in milliseconds)
+ * **max_delay_move**: maximum delay to be added to mouse movement (in milliseconds)
 
 ## Future Work:
 
