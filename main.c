@@ -46,6 +46,9 @@ char* event_handle; // event handle of the input event we want to add delay to (
 char* fifo_path;
 pthread_t fifo_thread; 
 
+// use attributes to create threads in a detached state
+pthread_attr_t invoked_event_thread_attr;
+
 // delay range for mouse clicks
 int min_delay_click = -1;
 int max_delay_click = -1;
@@ -85,13 +88,20 @@ void *invoke_delayed_event(void *args)
 { 
     delayed_event *event = args;
 
-    usleep(event->delay * 1000); // wait for the specified delay time (in milliseconds)
-
-    emit(event->fd, event->type, event->code, event->value); // this is the actual delayed input event (eg. mouse move or click)
-    emit(event->fd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
+    int eventFd = event->fd;
+    int eventType = event->type;
+    int eventCode = event->code;
+    int eventValue = event->value;
+    int eventDelay = event->delay;
 
     free(event);
-    return 0; 
+
+    usleep(eventDelay * 1000); // wait for the specified delay time (in milliseconds)
+
+    emit(eventFd, eventType, eventCode, eventValue); // this is the actual delayed input event (eg. mouse move or click)
+    emit(eventFd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
+
+    pthread_exit(NULL);
 } 
 
 // thread to handle external modification of delay times using a FIFO
@@ -271,6 +281,8 @@ int main(int argc, char* argv[])
     struct input_event inputEvent;
     int err = -1;
 
+    pthread_attr_setdetachstate(&invoked_event_thread_attr, PTHREAD_CREATE_DETACHED);
+
     // wait for new input events of the actual device
     // when new event arrives, generate a delay value and create a thread waiting for this delay time
     // the thread then generates an input event for a virtual input device
@@ -278,7 +290,7 @@ int main(int argc, char* argv[])
     while(1)
     {
         err = read(input_fd, &inputEvent, sizeof(struct input_event));
-        if(err > -1 && inputEvent.type != EV_SYN)
+        if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC) // I have no idea what EV_MSC is but it freezes the application (MSC_SCAN!) when moving fast
         {
             delayed_event *event = malloc(sizeof(delayed_event));
             event->fd = virtual_fd;
@@ -290,7 +302,7 @@ int main(int argc, char* argv[])
             else if(inputEvent.type == EV_REL) event->delay = calculate_delay(min_delay_move, max_delay_move);
 
             pthread_t delayed_event_thread; 
-            pthread_create(&delayed_event_thread, NULL, invoke_delayed_event, event); 
+	    pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
         }
     }
 
