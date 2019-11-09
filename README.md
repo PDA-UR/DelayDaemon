@@ -40,7 +40,6 @@ echo "200 300 0 0" > /tmp/delaydaemon
 
 This would start the program with a click delay of 100-200 ms and then increase the delay to 200-300 ms.
 
-
 ## Future Work:
 
  * add the possibility to use different distributions (like gaussian)
