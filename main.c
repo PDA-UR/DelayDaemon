@@ -55,6 +55,13 @@ int max_delay_click = -1;
 int min_delay_move = -1;
 int max_delay_move = -1;
 
+long long micros()
+{
+    struct timeval time;
+    gettimeofday(&time, NULL);
+    return (long long) time.tv_sec * 1000000l + (long long) time.tv_usec;
+}
+
 // generate a delay time for an input event
 // this function uses a linear distribution between min_delay_move and max_delay_move
 // other distributions (e.g. gaussian) may be added in the future
@@ -89,6 +96,8 @@ void *invoke_delayed_event(void *args)
 
     emit(event->fd, event->type, event->code, event->value); // this is the actual delayed input event (eg. mouse move or click)
     emit(event->fd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
+
+    printf("end   %lld\n", micros());
 
     free(event);
     return 0; 
@@ -280,6 +289,8 @@ int main(int argc, char* argv[])
         err = read(input_fd, &inputEvent, sizeof(struct input_event));
         if(err > -1 && inputEvent.type != EV_SYN)
         {
+            printf("begin %lld\n", micros());
+
             delayed_event *event = malloc(sizeof(delayed_event));
             event->fd = virtual_fd;
             event->type = inputEvent.type;
