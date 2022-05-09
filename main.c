@@ -45,7 +45,7 @@ typedef struct
     delayed_event* events;
 } event_vector;
 
-event_vector *ev;     // vector of all input events
+event_vector ev;     // vector of all input events
 int input_fd = -1;   // actual input device
 int virtual_fd = -1; // virtual device for delayed events
 int fifo_fd = -1;    // path to FIFO for remotely controlled delay times
@@ -309,7 +309,7 @@ void onExit(int signum)
     ioctl(virtual_fd, UI_DEV_DESTROY);
     close(virtual_fd);
 
-    write_event_log(ev);
+    write_event_log(&ev);
 
     exit(EXIT_SUCCESS);
 }
@@ -337,7 +337,7 @@ int main(int argc, char* argv[])
 
     event_handle = argv[1];
 
-    init_vector(ev, 100);
+    init_vector(&ev, 100);
 
     // prevents Keydown events for KEY_Enter from never being released when grabbing the input device
     // after running the program in a terminal by pressing Enter
@@ -391,7 +391,7 @@ int main(int argc, char* argv[])
 	        pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
 
             event->timestamp = inputEvent.time.tv_sec * 1000 + inputEvent.time.tv_usec / 1000;
-            append_to_vector(ev, *event);
+            append_to_vector(&ev, *event);
         }
     }
 
