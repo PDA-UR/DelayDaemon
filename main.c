@@ -26,7 +26,7 @@
 #include <signal.h>
 
 // set to 1 for more verbose console output
-#define DEBUG 0
+#define DEBUG 1
 
 typedef struct
 {
@@ -100,8 +100,8 @@ void write_event_log(event_vector *ev)
     if(access(log_file, F_OK) != 0)
     {
         FILE *file = fopen(log_file, "w+");
-        const char* header = "timestamp;delay;type;value;code";
-        fwrite(header, 1, sizeof(header), file);
+        const char* header = "timestamp;delay;type;value;code\n";
+        fwrite(header, 1, strlen(header), file);
         fclose(file);
     }
 
@@ -301,6 +301,8 @@ int init_input_device()
 // make sure to clean up when the program ends
 void onExit(int signum)
 {
+    write_event_log(&ev);
+    printf("foo");
     // end inter process communication
     pthread_cancel(fifo_thread);
     unlink(fifo_path);
@@ -309,7 +311,6 @@ void onExit(int signum)
     ioctl(virtual_fd, UI_DEV_DESTROY);
     close(virtual_fd);
 
-    write_event_log(&ev);
 
     exit(EXIT_SUCCESS);
 }
@@ -337,7 +338,7 @@ int main(int argc, char* argv[])
 
     event_handle = argv[1];
 
-    init_vector(&ev, 100);
+    init_vector(&ev, 10);
 
     // prevents Keydown events for KEY_Enter from never being released when grabbing the input device
     // after running the program in a terminal by pressing Enter
