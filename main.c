@@ -159,6 +159,30 @@ int init_fifo()
     return 1;
 }
 
+// enable mouse buttons and relative events
+// possible events of input devices can be found using the program evtest
+// the meaning of those key codes can be found here: https://www.kernel.org/doc/html/v4.15/input/event-codes.html
+void enable_mouse_events(int virtual_fd)
+{
+    ioctl(virtual_fd, UI_SET_KEYBIT, BTN_LEFT);
+    ioctl(virtual_fd, UI_SET_KEYBIT, KEY_SPACE);
+    ioctl(virtual_fd, UI_SET_KEYBIT, BTN_RIGHT);
+
+    ioctl(virtual_fd, UI_SET_EVBIT, EV_REL);
+    ioctl(virtual_fd, UI_SET_RELBIT, REL_X);
+    ioctl(virtual_fd, UI_SET_RELBIT, REL_Y);
+    ioctl(virtual_fd, UI_SET_RELBIT, REL_WHEEL);
+}
+
+//enable all keys on most keyboards
+void enable_keyboard_events(int virtual_fd)
+{
+    for(int keycode=1; keycode<=200; ++keycode)
+    {
+        ioctl(virtual_fd, UI_SET_KEYBIT, keycode);
+    }
+}
+
 // create a virtual input device
 // this device is used to trigger delayed input events
 // source: https://www.kernel.org/doc/html/v4.12/input/uinput.html
@@ -174,18 +198,9 @@ int init_virtual_input()
         return 0;
     }
 
-    // enable mouse buttons and relative events
-    // for devices other than mice, change this block
-    // possible events of input devices can be found using the program evtest
-    // the meaning of those key codes can be found here: https://www.kernel.org/doc/html/v4.15/input/event-codes.html
     ioctl(virtual_fd, UI_SET_EVBIT, EV_KEY);
-    ioctl(virtual_fd, UI_SET_KEYBIT, BTN_LEFT);
-    ioctl(virtual_fd, UI_SET_KEYBIT, BTN_RIGHT);
-
-    ioctl(virtual_fd, UI_SET_EVBIT, EV_REL);
-    ioctl(virtual_fd, UI_SET_RELBIT, REL_X);
-    ioctl(virtual_fd, UI_SET_RELBIT, REL_Y);
-    ioctl(virtual_fd, UI_SET_RELBIT, REL_WHEEL);
+    enable_mouse_events(virtual_fd);
+    enable_keyboard_events(virtual_fd);
 
     // some metadata for the input device...
     memset(&usetup, 0, sizeof(usetup));
@@ -258,6 +273,11 @@ int main(int argc, char* argv[])
     }
 
     event_handle = argv[1];
+
+    // prevents Keydown events for KEY_Enter from never being released when grabbing the input device
+    // after running the program in a terminal by pressing Enter
+    // https://stackoverflow.com/questions/41995349
+    sleep(1);
 
     if(!init_input_device()) return 1;
     if(!init_virtual_input()) return 1;
