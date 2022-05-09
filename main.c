@@ -30,24 +30,34 @@
 
 typedef struct
 {
-    int fd;     // file descriptor of the input device
-    int type;   // event type (e.g. key press, relative movement, ...)
-    int code;   // event code (e.g. for key pressses the key/button code)
-    int value;  // event value (e.g. 0/1 for button up/down, coordinates for absolute movement, ...)
-    int delay;  // delay time for the event in milliseconds
+    int fd;                     // file descriptor of the input device
+    int type;                   // event type (e.g. key press, relative movement, ...)
+    int code;                   // event code (e.g. for key pressses the key/button code)
+    int value;                  // event value (e.g. 0/1 for button up/down, coordinates for absolute movement, ...)
+    int delay;                  // delay time for the event in milliseconds
+    unsigned long timestamp;    // time the event occured
 } delayed_event;
 
+typedef struct
+{
+    size_t size;
+    size_t used;
+    delayed_event* events;
+} event_vector;
+
+event_vector *ev;     // vector of all input events
 int input_fd = -1;   // actual input device
 int virtual_fd = -1; // virtual device for delayed events
 int fifo_fd = -1;    // path to FIFO for remotely controlled delay times
 
 char* event_handle; // event handle of the input event we want to add delay to (normally somewhere in /dev/input/)
 
+const char* log_file = "event_log.csv";
 char* fifo_path;
 pthread_t fifo_thread; 
 
 // use attributes to create threads in a detached state
-pthread_attr_t invoked_event_thread_attr;
+pthread_attr_t invoked_event_thread_attr, log_delay_val_thread_attr;
 
 // delay range for mouse clicks
 int min_delay_click = -1;
@@ -57,6 +67,59 @@ int max_delay_click = -1;
 // note that variance here causes the movement to stutter
 int min_delay_move = -1;
 int max_delay_move = -1;
+
+// https://stackoverflow.com/a/3536261
+void init_vector(event_vector *ev, size_t size)
+{
+    ev->events = malloc(size * sizeof(delayed_event));
+    ev->used = 0;
+    ev->size = size;
+}
+
+void append_to_vector(event_vector *ev, delayed_event event)
+{
+    // upgrade allocated memory if necessary
+    if(ev->used >= ev->size)
+    {
+        ev->size *= 2;
+        ev->events = realloc(ev->events, ev->size * sizeof(delayed_event));
+    }
+    ev->events[ev->used++] = event;
+}
+
+void free_vector(event_vector *ev)
+{
+    free(ev->events);
+    ev->events = NULL;
+    ev->used = ev->size = 0;
+}
+
+void write_event_log(event_vector *ev)
+{
+    // write header if file doesn't exist
+    if(access(log_file, F_OK) != 0)
+    {
+        FILE *file = fopen(log_file, "w+");
+        const char* header = "timestamp;delay;type;value;code";
+        fwrite(header, 1, sizeof(header), file);
+        fclose(file);
+    }
+
+    FILE *file = fopen(log_file, "a");
+    for(int i=0; i<ev->used; ++i)
+    {
+        delayed_event evnt = ev->events[i];
+        fprintf(file,
+                "%lu;%i;%i;%i;%i\n",
+                evnt.timestamp,
+                evnt.delay,
+                evnt.type,
+                evnt.value,
+                evnt.code);
+    }
+    fclose(file);
+    free_vector(ev);
+}
 
 // generate a delay time for an input event
 // this function uses a linear distribution between min_delay_move and max_delay_move
@@ -94,15 +157,13 @@ void *invoke_delayed_event(void *args)
     int eventValue = event->value;
     int eventDelay = event->delay;
 
-    free(event);
-
     usleep(eventDelay * 1000); // wait for the specified delay time (in milliseconds)
 
     emit(eventFd, eventType, eventCode, eventValue); // this is the actual delayed input event (eg. mouse move or click)
     emit(eventFd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
 
     pthread_exit(NULL);
-} 
+}
 
 // thread to handle external modification of delay times using a FIFO
 void *handle_fifo(void *args)
@@ -248,6 +309,8 @@ void onExit(int signum)
     ioctl(virtual_fd, UI_DEV_DESTROY);
     close(virtual_fd);
 
+    write_event_log(ev);
+
     exit(EXIT_SUCCESS);
 }
 
@@ -273,6 +336,8 @@ int main(int argc, char* argv[])
     }
 
     event_handle = argv[1];
+
+    init_vector(ev, 100);
 
     // prevents Keydown events for KEY_Enter from never being released when grabbing the input device
     // after running the program in a terminal by pressing Enter
@@ -302,6 +367,7 @@ int main(int argc, char* argv[])
     int err = -1;
 
     pthread_attr_setdetachstate(&invoked_event_thread_attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setdetachstate(&log_delay_val_thread_attr, PTHREAD_CREATE_DETACHED);
 
     // wait for new input events of the actual device
     // when new event arrives, generate a delay value and create a thread waiting for this delay time
@@ -322,7 +388,10 @@ int main(int argc, char* argv[])
             else if(inputEvent.type == EV_REL) event->delay = calculate_delay(min_delay_move, max_delay_move);
 
             pthread_t delayed_event_thread; 
-	    pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
+	        pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
+
+            event->timestamp = inputEvent.time.tv_sec * 1000 + inputEvent.time.tv_usec / 1000;
+            append_to_vector(ev, *event);
         }
     }
 
