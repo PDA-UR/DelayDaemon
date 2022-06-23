@@ -176,6 +176,7 @@ int calculate_delay(int min, int max)
         {
             x = randn(mu, sigma);
         }
+        printf("%d\n", x);
         return x;
     }
     else return 0;
@@ -437,11 +438,21 @@ int main(int argc, char* argv[])
 
     if(argc > 8)
     {
+        sscanf(argv[8], "%lf", &mu);
+        sscanf(argv[9], "%lf", &sigma);
+    }
+    else
+    {
         // if mean for normal distribution is not specified, default to the mean of min and max delay
-        if(sscanf(argv[8], "%lf", &mu) == EOF) mu = (max_delay_click - min_delay_click) / 2;
-
+        mu = (max_delay_click + min_delay_click) / 2;
         // if not specified, default to 10% std
-        if(sscanf(argv[9], "%lf", &sigma) == EOF) sigma = (max_delay_click - min_delay_click) / 10;
+        sigma = mu / 20; 
+    }
+
+    if(mu>max_delay_click || mu<min_delay_click)
+    {
+        printf("Illegal value for mu. Average must be between min and max delay!\n");
+        return 1;
     }
 
     if(DEBUG) printf("click delay: %d - %d\nmove delay: %d - %d\n", min_delay_click, max_delay_click, min_delay_move, max_delay_move);
@@ -450,6 +461,8 @@ int main(int argc, char* argv[])
 
     struct input_event inputEvent;
     int err = -1;
+
+    printf("mu: %lf, sigma: %lf\n", mu, sigma);
 
     pthread_attr_setdetachstate(&invoked_event_thread_attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setdetachstate(&log_delay_val_thread_attr, PTHREAD_CREATE_DETACHED);
