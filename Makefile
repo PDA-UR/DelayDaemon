@@ -1,2 +1,2 @@
 main: main.c
-	gcc -Wall main.c -lpthread -o DelayDaemon
+	gcc -Wall main.c -lpthread -o DelayDaemon -lm

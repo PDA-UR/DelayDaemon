@@ -24,6 +24,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <math.h>
 
 // set to 1 for more verbose console output
 #define DEBUG 1
@@ -58,6 +59,15 @@ pthread_t fifo_thread;
 
 // use attributes to create threads in a detached state
 pthread_attr_t invoked_event_thread_attr, log_delay_val_thread_attr;
+
+enum{
+    linear,
+    normal
+} distribution;
+
+// normal distribution variables
+double mu = -1.0;
+double sigma = -1.0;
 
 // delay range for mouse clicks
 int min_delay_click = -1;
@@ -121,13 +131,54 @@ void write_event_log(event_vector *ev)
     free_vector(ev);
 }
 
+// returns a normally distributed value around an average mu with std sigma
+// source: https://phoxis.org/2013/05/04/generating-random-numbers-from-normal-distribution-in-c/
+int randn (double mu, double sigma)
+{
+  double U1, U2, W, mult;
+  static double X1, X2;
+  static int call = 0;
+ 
+  if (call == 1)
+    {
+      call = !call;
+      return (mu + sigma * (double) X2);
+    }
+ 
+  do
+    {
+      U1 = -1 + ((double) rand () / RAND_MAX) * 2;
+      U2 = -1 + ((double) rand () / RAND_MAX) * 2;
+      W = pow (U1, 2) + pow (U2, 2);
+    }
+  while (W >= 1 || W == 0);
+ 
+  mult = sqrt ((-2 * log (W)) / W);
+  X1 = U1 * mult;
+  X2 = U2 * mult;
+ 
+  call = !call;
+ 
+  return (mu + sigma * (double) X1);
+}
+
 // generate a delay time for an input event
 // this function uses a linear distribution between min_delay_move and max_delay_move
 // other distributions (e.g. gaussian) may be added in the future
 int calculate_delay(int min, int max)
 {
     if(min == max) return min; // add constant delay if no range is specified
-    else return min + (rand() % (max - min));
+    else if(distribution == linear) return min + (rand() % (max - min));
+    else if(distribution == normal)
+    {
+        int x = -1;
+        while(x < min || x > max)
+        {
+            x = randn(mu, sigma);
+        }
+        return x;
+    }
+    else return 0;
 }
 
 // creates an input event for the specified device
@@ -331,7 +382,10 @@ int main(int argc, char* argv[])
                "max_delay_click: maximum delay to be added to click events (in milliseconds)\n"
                "min_delay_move: minimum delay to be added to mouse movement (in milliseconds)\n"
                "max_delay_move: maximum delay to be added to mouse movement (in milliseconds)\n"
-               "fifo_path: path to a FIFO used to remotely set delay times during runtime (optional)\n"
+               "distribution: [l]inear (default) or [n]ormal"
+               "fifo_path: path to a FIFO used to remotely set delay times during runtime (optional). input \"none\" if unused\n"
+               "mu: mean for the normal distribution, if used"
+               "sigma: std for the normal distribution, if used"
                "Use the same value for min and max to achieve constant delays.\n");
         return 1;
     }
@@ -353,11 +407,41 @@ int main(int argc, char* argv[])
     if(sscanf(argv[4], "%d", &min_delay_move) == EOF) min_delay_move = 0;
     if(sscanf(argv[5], "%d", &max_delay_move) == EOF) max_delay_move = min_delay_move;
 
-    // path to a FIFO to enable inter process communication for remotely controlling the delay times (optional)
     if(argc > 6)
     {
-        fifo_path = argv[6];
-        if(!init_fifo()) return 1;
+        char d;
+        sscanf(argv[6], "%c", &d);
+        switch (d)
+        {
+        case 'l':
+            distribution = linear;
+            break;
+        case 'n':
+            distribution = normal;
+            break;
+        default:
+            distribution = linear;
+            break;
+        }
+    }
+
+    // path to a FIFO to enable inter process communication for remotely controlling the delay times (optional)
+    if(argc > 7)
+    {
+        if(!strcmp(argv[7], "none"))
+        {
+            fifo_path = argv[7];
+            if(!init_fifo()) return 1;
+        }
+    }
+
+    if(argc > 8)
+    {
+        // if mean for normal distribution is not specified, default to the mean of min and max delay
+        if(sscanf(argv[8], "%lf", &mu) == EOF) mu = (max_delay_click - min_delay_click) / 2;
+
+        // if not specified, default to 10% std
+        if(sscanf(argv[9], "%lf", &sigma) == EOF) sigma = (max_delay_click - min_delay_click) / 10;
     }
 
     if(DEBUG) printf("click delay: %d - %d\nmove delay: %d - %d\n", min_delay_click, max_delay_click, min_delay_move, max_delay_move);
