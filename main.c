@@ -25,6 +25,8 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <math.h>
+#include <libevdev/libevdev.h>
+#include <linux/rtc.h>
 
 // set to 1 for more verbose console output
 #define DEBUG 1
@@ -35,7 +37,7 @@ typedef struct
     int type;                   // event type (e.g. key press, relative movement, ...)
     int code;                   // event code (e.g. for key pressses the key/button code)
     int value;                  // event value (e.g. 0/1 for button up/down, coordinates for absolute movement, ...)
-    int delay;                  // delay time for the event in milliseconds
+    long delay;                  // delay time for the event in milliseconds
     unsigned long timestamp;    // time the event occured
 } delayed_event;
 
@@ -47,7 +49,7 @@ typedef struct
 } event_vector;
 
 event_vector ev;     // vector of all input events
-int input_fd = -1;   // actual input device
+int fd_event = -1;   // actual input device
 int virtual_fd = -1; // virtual device for delayed events
 int fifo_fd = -1;    // path to FIFO for remotely controlled delay times
 
@@ -77,6 +79,10 @@ int max_delay_click = -1;
 // note that variance here causes the movement to stutter
 int min_delay_move = -1;
 int max_delay_move = -1;
+
+struct libevdev *event_dev = NULL;
+struct libevdev *uinput_dev = NULL;
+int polling_rate = 8192;
 
 // https://stackoverflow.com/a/3536261
 void init_vector(event_vector *ev, size_t size)
@@ -120,7 +126,7 @@ void write_event_log(event_vector *ev)
     {
         delayed_event evnt = ev->events[i];
         fprintf(file,
-                "%lu;%i;%i;%i;%i\n",
+                "%lu;%li;%i;%i;%i\n",
                 evnt.timestamp,
                 evnt.delay,
                 evnt.type,
@@ -215,6 +221,58 @@ void *invoke_delayed_event(void *args)
     emit(eventFd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
 
     pthread_exit(NULL);
+}
+
+void *invoke_delayed_evdev_event(void *args) 
+{ 
+    delayed_event *event = args;
+    int eventDelay = event->delay;
+
+    usleep(eventDelay * 1000); // wait for the specified delay time (in milliseconds)
+
+    int rc = libevdev_uinput_write_event(
+            uinput_dev, event->type,
+            event->code, event->value);
+
+    if (rc != 0) {
+        printf("Failed to write uinput event: %s\n",
+                    strerror(-rc));
+    }
+
+    // emit(eventFd, eventType, eventCode, eventValue); // this is the actual delayed input event (eg. mouse move or click)
+    // emit(eventFd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
+
+    pthread_exit(NULL);
+}
+
+int get_event(struct input_event *event)
+{
+    struct timeval current_time;
+	gettimeofday(&current_time, NULL);
+    // if(timercmp(&current_time, &event->time, <)) return -1;
+
+	int rc = LIBEVDEV_READ_STATUS_SUCCESS;
+
+    rc = libevdev_next_event(event_dev,
+                    LIBEVDEV_READ_FLAG_NORMAL |
+                    LIBEVDEV_READ_FLAG_BLOCKING, event);
+
+    /* Handle dropped SYN. */
+    if (rc == LIBEVDEV_READ_STATUS_SYNC) {
+        printf("Warning, syn dropped: (%d) %s\n", -rc, strerror(-rc));
+
+        while (rc == LIBEVDEV_READ_STATUS_SYNC) {
+            rc = libevdev_next_event(event_dev,
+                    LIBEVDEV_READ_FLAG_SYNC, event);
+        }
+    }
+
+	if (rc == -ENODEV)
+    {
+		printf("Device disconnected: (%d) %s\n", -rc, strerror(-rc));
+        return -1;
+	}
+    return 1;
 }
 
 // thread to handle external modification of delay times using a FIFO
@@ -329,12 +387,53 @@ int init_virtual_input()
     return 1;
 }
 
+int init_evdev_input()
+{
+	/* Open device. */
+    // input_fd = open(event_handle, O_RDONLY | O_NONBLOCK);
+	fd_event = open(event_handle, O_RDONLY);
+	if (fd_event < 0) {
+		perror("Failed to open input device");
+		exit(EXIT_FAILURE);
+	}
+
+	/* Create libevdev device and grab it. */
+	if (libevdev_new_from_fd(fd_event, &event_dev) < 0) {
+		perror("Failed to init libevdev");
+		exit(EXIT_FAILURE);
+	}
+
+	if (libevdev_grab(event_dev, LIBEVDEV_GRAB) < 0) {
+		perror("Failed to grab device");
+		exit(EXIT_FAILURE);
+	}
+    return 1;
+}
+
+int init_evdev_virtual_input()
+{
+    /* Create uinput clone of device. */
+	int fd_uinput = open("/dev/uinput", O_WRONLY);
+
+	if (fd_uinput < 0) {
+		perror("Failed to open uinput device");
+		exit(EXIT_FAILURE);
+	}
+
+	if (libevdev_uinput_create_from_device(event_dev,
+				fd_uinput, &uinput_dev) < 0) {
+		perror("Failed to create uinput device");
+		exit(EXIT_FAILURE);
+	}
+    return 1;
+}
+
 // open the input device we want to "enhance" with delay
 int init_input_device()
 {
     if(DEBUG) printf("input event: %s\n", event_handle);
 
-    input_fd = open(event_handle, O_RDONLY | O_NONBLOCK);
+    int input_fd = open(event_handle, O_RDONLY | O_NONBLOCK);
 
     if(DEBUG) printf("input device fd: %d\n", input_fd);
 
@@ -400,8 +499,12 @@ int main(int argc, char* argv[])
     // https://stackoverflow.com/questions/41995349
     sleep(1);
 
-    if(!init_input_device()) return 1;
-    if(!init_virtual_input()) return 1;
+    // if(!init_input_device()) return 1;
+    // if(!init_virtual_input()) return 1;
+
+    if(!init_evdev_input()) return 1;
+    // if(!init_virtual_input()) return 1;
+    if(!init_evdev_virtual_input()) return 1;
 
     if(sscanf(argv[2], "%d", &min_delay_click) == EOF) min_delay_click = 0;
     if(sscanf(argv[3], "%d", &max_delay_click) == EOF) max_delay_click = min_delay_click;
@@ -459,23 +562,45 @@ int main(int argc, char* argv[])
 
     srand(time(0));
 
-    struct input_event inputEvent;
-    int err = -1;
-
     printf("mu: %lf, sigma: %lf\n", mu, sigma);
 
     pthread_attr_setdetachstate(&invoked_event_thread_attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setdetachstate(&log_delay_val_thread_attr, PTHREAD_CREATE_DETACHED);
 
+    /* Create RTC interrupts. */
+	int fd_rtc = open("/dev/rtc", O_RDONLY);
+
+	if (fd_rtc < 0) {
+		perror("Failed to open RTC timer");
+		exit(EXIT_FAILURE);
+	}
+
+	if (ioctl(fd_rtc, RTC_IRQP_SET, polling_rate) < 0) {
+		perror("Failed to set RTC interrupts");
+		exit(EXIT_FAILURE);
+	}
+
+	if (ioctl(fd_rtc, RTC_PIE_ON, 0) < 0) {
+		perror("Failed to enable  RTC interrupts");
+		exit(EXIT_FAILURE);
+	}
+
+    struct input_event inputEvent;
+    int err = -1;
+    int rc;
     // wait for new input events of the actual device
     // when new event arrives, generate a delay value and create a thread waiting for this delay time
     // the thread then generates an input event for a virtual input device
     // note EV_SYN events are NOT delayed, they are automatically generated when the delayed event is executed
+    // while(err = read(fd_rtc, NULL, sizeof(unsigned long)))
     while(1)
     {
-        err = read(input_fd, &inputEvent, sizeof(struct input_event));
-        if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC) // I have no idea what EV_MSC is but it freezes the application (MSC_SCAN!) when moving fast
-        {
+        // err = read(fd_event, &inputEvent, sizeof(struct input_event));
+        // err = get_event(&inputEvent);
+        err = get_event(&inputEvent);
+        if(err > -1)
+        // if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC) // I have no idea what EV_MSC is but it freezes the application (MSC_SCAN!) when moving fast
+		{
             delayed_event *event = malloc(sizeof(delayed_event));
             event->fd = virtual_fd;
             event->type = inputEvent.type;
@@ -486,12 +611,11 @@ int main(int argc, char* argv[])
             else if(inputEvent.type == EV_REL) event->delay = calculate_delay(min_delay_move, max_delay_move);
 
             pthread_t delayed_event_thread; 
-	        pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
+            pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_evdev_event, event);
 
             event->timestamp = inputEvent.time.tv_sec * 1000 + inputEvent.time.tv_usec / 1000;
             append_to_vector(&ev, *event);
         }
     }
-
     return 0;
 }
