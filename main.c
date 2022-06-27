@@ -239,6 +239,8 @@ void *invoke_delayed_evdev_event(void *args)
                     strerror(-rc));
     }
 
+    rc = libevdev_uinput_write_event(uinput_dev, EV_SYN, SYN_REPORT, 0);
+
     // emit(eventFd, eventType, eventCode, eventValue); // this is the actual delayed input event (eg. mouse move or click)
     // emit(eventFd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
 
@@ -592,13 +594,13 @@ int main(int argc, char* argv[])
     // when new event arrives, generate a delay value and create a thread waiting for this delay time
     // the thread then generates an input event for a virtual input device
     // note EV_SYN events are NOT delayed, they are automatically generated when the delayed event is executed
-    // while(err = read(fd_rtc, NULL, sizeof(unsigned long)))
-    while(1)
+    while(err = read(fd_rtc, NULL, sizeof(unsigned long)))
+    // while(1)
     {
         // err = read(fd_event, &inputEvent, sizeof(struct input_event));
         // err = get_event(&inputEvent);
         err = get_event(&inputEvent);
-        if(err > -1)
+        if(err > -1 && inputEvent.type != EV_SYN)
         // if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC) // I have no idea what EV_MSC is but it freezes the application (MSC_SCAN!) when moving fast
 		{
             delayed_event *event = malloc(sizeof(delayed_event));
