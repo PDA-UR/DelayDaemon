@@ -5,6 +5,8 @@ LDFLAGS = $(shell pkg-config --libs libevdev)
 LIBS = -pthread -lm
 
 OBJECTS = \
+	log.o \
+	args.o \
 	main.o
 
 $(TARGET) : $(OBJECTS)
