@@ -1,5 +1,3 @@
-# main: main.c
-# 	gcc -Wall main.c -lpthread -o DelayDaemon -lm $(shell pkg-config --cflags libevdev)
 TARGET = DelayDaemon
 
 CFLAGS = -Wall -pedantic -O3 -std=gnu11 $(shell pkg-config --cflags libevdev)
