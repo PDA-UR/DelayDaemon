@@ -278,6 +278,7 @@ int main(int argc, char* argv[])
     args.max_key_delay = 0;
     args.min_move_delay = 0;
     args.max_move_delay = 0;
+    args.fifo_path = NULL;
     args.distribution = "";
 
 	if (parse_args(argc, argv, &args) < 0) {
@@ -293,8 +294,9 @@ int main(int argc, char* argv[])
     max_delay_move = args.max_move_delay;
     mu = args.mean;
     sigma = args.std;
-    if(strcmp(args.distribution, "normal")) distribution = normal;
+    if(strcmp(args.distribution, "normal") == 0) distribution = normal;
     else distribution = linear;
+    if(args.fifo_path) fifo_path = args.fifo_path;
     DEBUG = args.verbose;
 
     // prevents Keydown events for KEY_Enter from never being released when grabbing the input device
@@ -305,6 +307,10 @@ int main(int argc, char* argv[])
     init_vector(&ev, 10);
     if(!init_input_device()) return 1;
     if(!init_virtual_input()) return 1;
+    if(fifo_path != NULL && fifo_path[0] != '\0')
+    {
+        if(!init_fifo()) return 1;
+    }
 
     if(distribution==normal && DEBUG) printf("Normal distribution: mean: %lf, std: %lf\n", mu, sigma);
 
