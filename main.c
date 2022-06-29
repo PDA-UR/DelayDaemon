@@ -331,7 +331,7 @@ int main(int argc, char* argv[])
     while(1)
     {
         err = get_event(&inputEvent);
-        if(err > -1 && inputEvent.type != EV_SYN)
+        if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC)
 		{
             delayed_event *event = malloc(sizeof(delayed_event));
             event->type = inputEvent.type;
