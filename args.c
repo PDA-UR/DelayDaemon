@@ -58,7 +58,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         args->fifo_path = arg;
         break;
     case 'v':
-        args->verbose = strtol(arg, NULL, 10);
+        args->verbose = 1;
         break;
 	case ARGP_KEY_END:
 
