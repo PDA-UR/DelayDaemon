@@ -46,7 +46,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         args->max_move_delay = strtol(arg, NULL, 10);
         break;
     case 'd':
-        args->distribution = arg;
+        args->distribution = arg + 1;   // skip the '=' character
         break;
     case 'm':
         args->mean = strtol(arg, NULL, 10);
@@ -55,7 +55,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         args->std = strtol(arg, NULL, 10);
         break;
     case 'f':
-        args->fifo_path = arg;
+        args->fifo_path = arg +1;
         break;
     case 'v':
         args->verbose = 1;
@@ -68,31 +68,25 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 			argp_state_help(state, stdout, ARGP_HELP_STD_HELP);
 		}
 
-		/* Check if delay is specified. */
-		if (args->min_key_delay == 0 && args->max_key_delay == 0)
-        {
-			argp_state_help(state, stdout, ARGP_HELP_STD_HELP);
-		}
-        else if(args->min_key_delay > 0 && args->max_key_delay == 0)
+        if(args->min_key_delay > 0 && args->max_key_delay == 0)
         {
             args->max_key_delay = args->min_key_delay;
         }
         // set default values if none specified
-        if(strcmp(args->distribution, "normal"))
+        if(strcmp(args->distribution, "normal") == 0)
         {
             if(args->mean == 0) args->mean = (args->max_key_delay + args->min_key_delay) / 2;
             if(args->std == 0) args->std = args->mean / 10;
-        }
 
-        if(args->mean > args->max_key_delay
-        || args->mean < args->min_key_delay
-        ||(args->mean > args->max_move_delay && args->max_move_delay > 0)   // since move delay is optional and can be 0
-        || args->mean < args->min_move_delay)
-        {
-            printf("Illegal value for mu. Average must be between min and max delay!\n");
-            return 1;
+            if(args->mean > args->max_key_delay
+            || args->mean < args->min_key_delay
+            ||(args->mean > args->max_move_delay && args->max_move_delay > 0)   // since move delay is optional and can be 0
+            || args->mean < args->min_move_delay)
+            {
+                printf("Illegal value for mu. Average must be between min and max delay!\n");
+                return 1;
+            }
         }
-
 		break;
 	}
 
