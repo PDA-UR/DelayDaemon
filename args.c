@@ -2,7 +2,7 @@
 
 static char doc[] =
 	"DelayDaemon 1.1 -- A GNU/Linux tool to add (varying) latency to input devices\n"
-	"Run as superuser!\n";
+	"Run as superuser\n";
 
 const char *argp_program_version =
 	"DelayDaemon 1.1";
@@ -21,7 +21,7 @@ static struct argp_option options[] =
 	{"mean", 'm', "NUM", OPTION_ARG_OPTIONAL, "target mean value for normal distribution"},
 	{"std", 's', "NUM", OPTION_ARG_OPTIONAL, "target standard distribution for normal distribution"},
 	{"fifo", 'f', "FILE", OPTION_ARG_OPTIONAL, "path to the fifo file"},
-	{"verbose", 'v', "NUM", OPTION_ARG_OPTIONAL, "turn on debug prints"},
+	{"verbose", 'v', NULL, OPTION_ARG_OPTIONAL, "turn on debug prints"},
 	{0}
 };
 
