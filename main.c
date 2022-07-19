@@ -1,62 +1,87 @@
 // created by Andreas Schmid, 2019
-// this software is released into the public domain, do whatever you want with it
+// edited by Thomas Fischer, 2022
+// partly based on evlag by Filip Aláč
 //
-// Usage: latency_daemon [event_handle] [min_delay_move] [max_delay_move] [fifo_path]
-// event_handle: path to input device you want to delay (e.g. /dev/input/event5)
-// min_delay_click: minimum delay to be added to click events (in milliseconds)
-// max_delay_click: maximum delay to be added to click events (in milliseconds)
-// min_delay_move: minimum delay to be added to mouse movement (in milliseconds)
-// max_delay_move: maximum delay to be added to mouse movement (in milliseconds)
-// fifo_path: path to a FIFO used to remotely set delay times during runtime (optional)
 // Use the same value for min and max to achieve constant delays.
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
-#include <linux/input.h>
-#include <linux/uinput.h>
 #include <time.h>
-#include <unistd.h>
 #include <string.h>
 #include <pthread.h> 
 #include <errno.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <math.h>
+#include "args.h"
+#include "log.h"
+#include <libevdev/libevdev.h>
 
-// set to 1 for more verbose console output
-#define DEBUG 0
+struct arguments args;
+int DEBUG = 0;
 
-typedef struct
-{
-    int fd;     // file descriptor of the input device
-    int type;   // event type (e.g. key press, relative movement, ...)
-    int code;   // event code (e.g. for key pressses the key/button code)
-    int value;  // event value (e.g. 0/1 for button up/down, coordinates for absolute movement, ...)
-    int delay;  // delay time for the event in milliseconds
-} delayed_event;
-
-int input_fd = -1;   // actual input device
-int virtual_fd = -1; // virtual device for delayed events
-int fifo_fd = -1;    // path to FIFO for remotely controlled delay times
+event_vector ev;     // vector of all input events
 
 char* event_handle; // event handle of the input event we want to add delay to (normally somewhere in /dev/input/)
 
+int fifo_fd = -1;    // path to FIFO for remotely controlled delay times
 char* fifo_path;
 pthread_t fifo_thread; 
 
 // use attributes to create threads in a detached state
-pthread_attr_t invoked_event_thread_attr;
+pthread_attr_t invoked_event_thread_attr, log_delay_val_thread_attr;
 
-// delay range for mouse clicks
-int min_delay_click = -1;
-int max_delay_click = -1;
+enum{
+    linear,
+    normal
+} distribution;
+
+// normal distribution variables
+double mu = -1.0;
+double sigma = -1.0;
+
+// delay range for key events
+int min_delay_key = -1;
+int max_delay_key = -1;
 
 // delay range for mouse movement
 // note that variance here causes the movement to stutter
 int min_delay_move = -1;
 int max_delay_move = -1;
+
+struct libevdev *event_dev = NULL;
+struct libevdev *uinput_dev = NULL;
+int polling_rate = 8192;
+
+// returns a normally distributed value around an average mu with std sigma
+// source: https://phoxis.org/2013/05/04/generating-random-numbers-from-normal-distribution-in-c/
+int randn (double mu, double sigma)
+{
+  double U1, U2, W, mult;
+  static double X1, X2;
+  static int call = 0;
+ 
+  if (call == 1)
+    {
+      call = !call;
+      return (mu + sigma * (double) X2);
+    }
+ 
+  do
+    {
+      U1 = -1 + ((double) rand () / RAND_MAX) * 2;
+      U2 = -1 + ((double) rand () / RAND_MAX) * 2;
+      W = pow (U1, 2) + pow (U2, 2);
+    }
+  while (W >= 1 || W == 0);
+ 
+  mult = sqrt ((-2 * log (W)) / W);
+  X1 = U1 * mult;
+  X2 = U2 * mult;
+ 
+  call = !call;
+ 
+  return (mu + sigma * (double) X1);
+}
 
 // generate a delay time for an input event
 // this function uses a linear distribution between min_delay_move and max_delay_move
@@ -64,23 +89,17 @@ int max_delay_move = -1;
 int calculate_delay(int min, int max)
 {
     if(min == max) return min; // add constant delay if no range is specified
-    else return min + (rand() % (max - min));
-}
-
-// creates an input event for the specified device
-// source: https://www.kernel.org/doc/html/v4.12/input/uinput.html
-void emit(int fd, int type, int code, int val)
-{
-    struct input_event ie;
-    
-    ie.type = type;
-    ie.code = code;
-    ie.value = val;
-    
-    ie.time.tv_sec = 0;
-    ie.time.tv_usec = 0;
-    
-    write(fd, &ie, sizeof(ie));
+    else if(distribution == linear) return min + (rand() % (max - min));
+    else if(distribution == normal)
+    {
+        int x = -1;
+        while(x < min || x > max)
+        {
+            x = randn(mu, sigma);
+        }
+        return x;
+    }
+    else return 0;
 }
 
 // wait for some time, then emit an input event to a virtual input device
@@ -88,21 +107,18 @@ void *invoke_delayed_event(void *args)
 { 
     delayed_event *event = args;
 
-    int eventFd = event->fd;
-    int eventType = event->type;
-    int eventCode = event->code;
-    int eventValue = event->value;
-    int eventDelay = event->delay;
+    usleep(event->delay * 1000); // wait for the specified delay time (in milliseconds)
 
-    free(event);
+    int rc = libevdev_uinput_write_event(
+            uinput_dev, event->type,
+            event->code, event->value);
 
-    usleep(eventDelay * 1000); // wait for the specified delay time (in milliseconds)
+    if(rc != 0) printf("Failed to write uinput event: %s\n", strerror(-rc));
 
-    emit(eventFd, eventType, eventCode, eventValue); // this is the actual delayed input event (eg. mouse move or click)
-    emit(eventFd, EV_SYN, SYN_REPORT, 0); // EV_SYN events have to come in time so we trigger them manually
+    rc = libevdev_uinput_write_event(uinput_dev, EV_SYN, SYN_REPORT, 0);
 
     pthread_exit(NULL);
-} 
+}
 
 // thread to handle external modification of delay times using a FIFO
 void *handle_fifo(void *args)
@@ -110,7 +126,7 @@ void *handle_fifo(void *args)
     char buffer[80];
 
     // needed so we don't lose our old delay times in case something goes wrong
-    int buffer_min_delay_click, buffer_max_delay_click, buffer_min_delay_move, buffer_max_delay_move;
+    int buffer_min_delay_key, buffer_max_delay_key, buffer_min_delay_move, buffer_max_delay_move;
 
     while(1)
     {
@@ -121,19 +137,19 @@ void *handle_fifo(void *args)
 
         // parse new values from the FIFO
         // only set the delay times if all four values could be read correctly
-        if(sscanf(buffer, "%d %d %d %d", &buffer_min_delay_click, &buffer_max_delay_click, &buffer_min_delay_move, &buffer_max_delay_move) == 4)
+        if(sscanf(buffer, "%d %d %d %d", &buffer_min_delay_key, &buffer_max_delay_key, &buffer_min_delay_move, &buffer_max_delay_move) == 4)
         {
             // set delay times
-            min_delay_click = buffer_min_delay_click;
-            max_delay_click = buffer_max_delay_click;
+            min_delay_key = buffer_min_delay_key;
+            max_delay_key = buffer_max_delay_key;
             min_delay_move = buffer_min_delay_move;
             max_delay_move = buffer_max_delay_move;
 
             // make sure max >= min
-            if(max_delay_click < min_delay_click) max_delay_click = min_delay_click;
+            if(max_delay_key < min_delay_key) max_delay_key = min_delay_key;
             if(max_delay_move < min_delay_move) max_delay_move = min_delay_move;
 
-            if(DEBUG) printf("set new values: %d %d %d %d\n", min_delay_click, max_delay_click, min_delay_move, max_delay_move);
+            if(DEBUG) printf("set new values: %d %d %d %d\n", min_delay_key, max_delay_key, min_delay_move, max_delay_move);
         }
         else
         {
@@ -146,7 +162,7 @@ void *handle_fifo(void *args)
 
 // create a FIFO for inter process communication at the path defined by the 6th command line parameter (recommended: somewhere in /tmp)
 // this can be used to adjust the delay values with an external program during runtime
-// simply write (or echo) four numbers (min_delay_click max_delay_click min_delay_move max_delay move) separated by whitespaces into the FIFO
+// simply write (or echo) four numbers (min_delay_key max_delay_key min_delay_move max_delay move) separated by whitespaces into the FIFO
 int init_fifo()
 {
     unlink(fifo_path); // unlink the FIFO if it already exists
@@ -159,79 +175,96 @@ int init_fifo()
     return 1;
 }
 
-// create a virtual input device
-// this device is used to trigger delayed input events
-// source: https://www.kernel.org/doc/html/v4.12/input/uinput.html
-int init_virtual_input()
+// open the input device we want to "enhance" with delay
+int init_input_device()
 {
-    struct uinput_setup usetup;
-
-    virtual_fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
-
-    if(!virtual_fd)
+	/* Open device. */
+	int fd_event = open(event_handle, O_RDONLY);
+	if (fd_event < 0)
     {
-        printf("Error - Could not open virtual device\n");
-        return 0;
-    }
+		perror("Failed to open input device");
+		exit(EXIT_FAILURE);
+	}
 
-    // enable mouse buttons and relative events
-    // for devices other than mice, change this block
-    // possible events of input devices can be found using the program evtest
-    // the meaning of those key codes can be found here: https://www.kernel.org/doc/html/v4.15/input/event-codes.html
-    ioctl(virtual_fd, UI_SET_EVBIT, EV_KEY);
-    ioctl(virtual_fd, UI_SET_KEYBIT, BTN_LEFT);
-    ioctl(virtual_fd, UI_SET_KEYBIT, BTN_RIGHT);
+	/* Create libevdev device and grab it. */
+	if (libevdev_new_from_fd(fd_event, &event_dev) < 0)
+    {
+		perror("Failed to init libevdev");
+		exit(EXIT_FAILURE);
+	}
 
-    ioctl(virtual_fd, UI_SET_EVBIT, EV_REL);
-    ioctl(virtual_fd, UI_SET_RELBIT, REL_X);
-    ioctl(virtual_fd, UI_SET_RELBIT, REL_Y);
-    ioctl(virtual_fd, UI_SET_RELBIT, REL_WHEEL);
-
-    // some metadata for the input device...
-    memset(&usetup, 0, sizeof(usetup));
-    usetup.id.bustype = BUS_USB;
-    usetup.id.vendor = 0x1234; // sample vendor
-    usetup.id.product = 0x5678; // sample product
-    strcpy(usetup.name, "DelayDaemon");
-
-    // actually create the device...
-    ioctl(virtual_fd, UI_DEV_SETUP, &usetup);
-    ioctl(virtual_fd, UI_DEV_CREATE);
+	if (libevdev_grab(event_dev, LIBEVDEV_GRAB) < 0)
+    {
+		perror("Failed to grab device");
+		exit(EXIT_FAILURE);
+	}
 
     return 1;
 }
 
-// open the input device we want to "enhance" with delay
-int init_input_device()
+// create a virtual input device
+// this device is used to trigger delayed input events
+// source: https://www.freedesktop.org/software/libevdev/doc/latest/group__uinput.html#gaf14b21301bac9d79c20e890172873b96
+int init_virtual_input()
 {
-    if(DEBUG) printf("input event: %s\n", event_handle);
-
-    input_fd = open(event_handle, O_RDONLY | O_NONBLOCK);
-
-    if(DEBUG) printf("input device fd: %d\n", input_fd);
-
-    if(!input_fd)
+    /* Create uinput clone of device. */
+	int fd_uinput = open("/dev/uinput", O_WRONLY);
+	if (fd_uinput < 0)
     {
-        printf("Error - Device not found: %d\n", input_fd);
-        return 0;
+		perror("Failed to open uinput device");
+		exit(EXIT_FAILURE);
+	}
+
+	if (libevdev_uinput_create_from_device(event_dev, fd_uinput, &uinput_dev) < 0)
+    {
+		perror("Failed to create uinput device");
+		exit(EXIT_FAILURE);
+	}
+
+    return 1;
+}
+
+// get the next input event from libevdev
+int get_event(struct input_event *event)
+{
+    struct timeval current_time;
+	gettimeofday(&current_time, NULL);
+
+	int rc = LIBEVDEV_READ_STATUS_SUCCESS;
+
+    rc = libevdev_next_event(event_dev,
+                    LIBEVDEV_READ_FLAG_NORMAL |
+                    LIBEVDEV_READ_FLAG_BLOCKING, event);
+
+    /* Handle dropped SYN. */
+    if (rc == LIBEVDEV_READ_STATUS_SYNC)
+    {
+        printf("Warning, syn dropped: (%d) %s\n", -rc, strerror(-rc));
+
+        while (rc == LIBEVDEV_READ_STATUS_SYNC)
+        {
+            rc = libevdev_next_event(event_dev,
+                    LIBEVDEV_READ_FLAG_SYNC, event);
+        }
     }
 
-    // this line reserves the device for this program so its events do not arrive at other applications
-    ioctl(input_fd, EVIOCGRAB, 1);
-
+	if (rc == -ENODEV)
+    {
+		printf("Device disconnected: (%d) %s\n", -rc, strerror(-rc));
+        return -1;
+	}
     return 1;
 }
 
 // make sure to clean up when the program ends
 void onExit(int signum)
 {
+    printf("\n");
+    write_event_log(&ev);
+
     // end inter process communication
     pthread_cancel(fifo_thread);
     unlink(fifo_path);
-
-    // close virtual input device
-    ioctl(virtual_fd, UI_DEV_DESTROY);
-    close(virtual_fd);
 
     exit(EXIT_SUCCESS);
 }
@@ -239,72 +272,82 @@ void onExit(int signum)
 int main(int argc, char* argv[]) 
 {
     signal(SIGINT, onExit);
+    // defaults
+	args.device_file = NULL;
+    args.min_key_delay = 0;
+    args.max_key_delay = 0;
+    args.min_move_delay = 0;
+    args.max_move_delay = 0;
+    args.fifo_path = NULL;
+    args.distribution = "";
 
-    // check arguments
-    // event_handle is mandatory
-    // if only one delay value is passed, the added delay is constant
-    if(argc <= 2)
-    {
-        printf("Too few arguments!\n"
-               "Usage: latency_daemon [event_handle] [min_delay_move] [max_delay_move] [fifo_path]\n"
-               "event_handle: path to input device you want to delay (e.g. /dev/input/event5)\n"
-               "min_delay_click: minimum delay to be added to click events (in milliseconds)\n"
-               "max_delay_click: maximum delay to be added to click events (in milliseconds)\n"
-               "min_delay_move: minimum delay to be added to mouse movement (in milliseconds)\n"
-               "max_delay_move: maximum delay to be added to mouse movement (in milliseconds)\n"
-               "fifo_path: path to a FIFO used to remotely set delay times during runtime (optional)\n"
-               "Use the same value for min and max to achieve constant delays.\n");
-        return 1;
-    }
+	if (parse_args(argc, argv, &args) < 0) {
+		perror("Failed to parse arguments");
+		exit(EXIT_FAILURE);
+	}
 
-    event_handle = argv[1];
+    // set global variables
+    event_handle = args.device_file;
+    min_delay_key = args.min_key_delay;
+    max_delay_key = args.max_key_delay;
+    min_delay_move = args.min_move_delay;
+    max_delay_move = args.max_move_delay;
+    mu = args.mean;
+    sigma = args.std;
+    if(strcmp(args.distribution, "normal") == 0) distribution = normal;
+    else distribution = linear;
+    if(args.fifo_path) fifo_path = args.fifo_path;
+    DEBUG = args.verbose;
 
+    // prevents Keydown events for KEY_Enter from never being released when grabbing the input device
+    // after running the program in a terminal by pressing Enter
+    // https://stackoverflow.com/questions/41995349
+    sleep(1);
+
+    init_vector(&ev, 10);
     if(!init_input_device()) return 1;
     if(!init_virtual_input()) return 1;
-
-    if(sscanf(argv[2], "%d", &min_delay_click) == EOF) min_delay_click = 0;
-    if(sscanf(argv[3], "%d", &max_delay_click) == EOF) max_delay_click = min_delay_click;
-    if(sscanf(argv[4], "%d", &min_delay_move) == EOF) min_delay_move = 0;
-    if(sscanf(argv[5], "%d", &max_delay_move) == EOF) max_delay_move = min_delay_move;
-
-    // path to a FIFO to enable inter process communication for remotely controlling the delay times (optional)
-    if(argc > 6)
+    if(fifo_path != NULL && fifo_path[0] != '\0')
     {
-        fifo_path = argv[6];
         if(!init_fifo()) return 1;
     }
 
-    if(DEBUG) printf("click delay: %d - %d\nmove delay: %d - %d\n", min_delay_click, max_delay_click, min_delay_move, max_delay_move);
+    if(distribution==normal && DEBUG) printf("Normal distribution: mean: %lf, std: %lf\n", mu, sigma);
+
+    if(DEBUG) printf("key delay: %d - %d\nmove delay: %d - %d\n", min_delay_key, max_delay_key, min_delay_move, max_delay_move);
 
     srand(time(0));
 
-    struct input_event inputEvent;
-    int err = -1;
-
     pthread_attr_setdetachstate(&invoked_event_thread_attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setdetachstate(&log_delay_val_thread_attr, PTHREAD_CREATE_DETACHED);
 
     // wait for new input events of the actual device
     // when new event arrives, generate a delay value and create a thread waiting for this delay time
     // the thread then generates an input event for a virtual input device
     // note EV_SYN events are NOT delayed, they are automatically generated when the delayed event is executed
+    struct input_event inputEvent;
+    int err = -1;
+
     while(1)
     {
-        err = read(input_fd, &inputEvent, sizeof(struct input_event));
-        if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC) // I have no idea what EV_MSC is but it freezes the application (MSC_SCAN!) when moving fast
-        {
+        err = get_event(&inputEvent);
+        if(err > -1 && inputEvent.type != EV_SYN && inputEvent.type != EV_MSC)
+		{
             delayed_event *event = malloc(sizeof(delayed_event));
-            event->fd = virtual_fd;
             event->type = inputEvent.type;
             event->code = inputEvent.code;
             event->value = inputEvent.value;
 
-            if(inputEvent.type == EV_KEY) event->delay = calculate_delay(min_delay_click, max_delay_click);
+            if(inputEvent.type == EV_KEY) event->delay = calculate_delay(min_delay_key, max_delay_key);
             else if(inputEvent.type == EV_REL) event->delay = calculate_delay(min_delay_move, max_delay_move);
 
             pthread_t delayed_event_thread; 
-	    pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
+            pthread_create(&delayed_event_thread, &invoked_event_thread_attr, invoke_delayed_event, event);
+
+            event->timestamp = inputEvent.time.tv_sec * 1000 + inputEvent.time.tv_usec / 1000;
+            append_to_vector(&ev, *event);
         }
     }
-
+    
     return 0;
 }
